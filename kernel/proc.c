@@ -126,6 +126,19 @@ allocproc(void)
 found:
   p->pid = allocpid();
   p->state = USED;
+  p->alarm_interval = 0;
+  p->ticks_passed = 0;
+  p->handler = 0;
+  p->alarm_flag = 0;
+  p->trace_flag = 0;
+  p->trace_mask = 0;
+
+  if ((p->trapframe_2 = (struct trapframe *)kalloc()) == 0)
+  {
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
 
   // Allocate a trapframe page.
   if ((p->trapframe = (struct trapframe *)kalloc()) == 0)
@@ -328,6 +341,9 @@ int fork(void)
   acquire(&np->lock);
   np->state = RUNNABLE;
   release(&np->lock);
+
+  np->trace_flag = p->trace_flag;
+  np->trace_mask = p->trace_mask;
 
   return pid;
 }
