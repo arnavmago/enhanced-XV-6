@@ -10,6 +10,9 @@ struct spinlock tickslock;
 uint ticks;
 
 extern char trampoline[], uservec[], userret[];
+extern struct proc proc[NPROC];
+
+int time_slice[5] = {1, 2, 4, 8, 16};
 
 // in kernelvec.S, calls kerneltrap().
 void kernelvec();
@@ -67,6 +70,9 @@ void usertrap(void)
   else if ((which_dev = devintr()) != 0)
   {
   }
+  else if (r_scause() == 15 && r_stval() < p->sz && cow_handler(p->pagetable, r_stval()) > 0)
+  {
+  }
   else
   {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
@@ -80,6 +86,72 @@ void usertrap(void)
   // give up the CPU if this is a timer interrupt.
   if (which_dev == 2)
   {
+#ifdef MLFQ
+
+    struct proc *itr;
+    int flag = 0;
+    for (itr = proc; itr < &proc[NPROC]; itr++)
+    {
+      acquire(&itr->lock);
+      if (itr->state == RUNNING)
+      {
+        itr->ticks_completed++;
+        if (itr->ticks_completed == time_slice[itr->queue])
+        {
+          flag = 1;
+          if (itr->queue != 4)
+          {
+            itr->queue++;
+            itr->ticks_completed = 0;
+            itr->queue_index = ticks;
+            itr->wait_time = 0;
+          }
+          else if (itr->queue == 4)
+          {
+            itr->ticks_completed = 0;
+            itr->queue_index = ticks;
+            itr->wait_time = 0;
+          }
+        }
+      }
+      else if (itr->state == RUNNABLE)
+      {
+        if (myproc() != itr)
+        {
+          if (itr->queue < myproc()->queue)
+          {
+            flag = 1;
+          }
+        }
+        itr->wait_time++;
+      }
+      release(&itr->lock);
+    }
+
+    if (flag == 1)
+    {
+      yield();
+    }
+
+#endif
+
+#ifdef PBS
+    struct proc *itr;
+    for (itr = proc; itr < &proc[NPROC]; itr++)
+    {
+      acquire(&itr->lock);
+      if (itr->state == RUNNING)
+      {
+        itr->running_ticks++;
+      }
+      if ((itr->sleeping_ticks != 0) && (itr->running_ticks != 0))
+      {
+        itr->niceness = (int)((itr->sleeping_ticks / (itr->sleeping_ticks + itr->running_ticks)) * 10);
+      }
+      release(&itr->lock);
+    }
+#endif
+
     if (p->alarm_flag == 1)
     {
       p->ticks_passed++;
@@ -91,7 +163,14 @@ void usertrap(void)
         p->trapframe->epc = p->handler;
       }
     }
+
+#ifdef RR
     yield();
+#endif
+
+#ifdef LBS
+    yield();
+#endif
   }
 
   usertrapret();
@@ -165,7 +244,15 @@ void kerneltrap()
 
   // give up the CPU if this is a timer interrupt.
   if (which_dev == 2 && myproc() != 0 && myproc()->state == RUNNING)
+  {
+#ifdef RR
     yield();
+#endif
+
+#ifdef LBS
+    yield();
+#endif
+  }
 
   // the yield() may have caused some traps to occur,
   // so restore trap registers for use by kernelvec.S's sepc instruction.
@@ -177,6 +264,7 @@ void clockintr()
 {
   acquire(&tickslock);
   ticks++;
+  update_time();
   wakeup(&ticks);
   release(&tickslock);
 }

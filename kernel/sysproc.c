@@ -7,13 +7,89 @@
 #include "proc.h"
 #include "stdlib.h"
 
+extern struct proc proc[NPROC];
+
+uint64
+sys_waitx(void)
+{
+  uint64 addr, addr1, addr2;
+  uint wtime, rtime;
+  argaddr(0, &addr);
+  argaddr(1, &addr1); // user virtual memory
+  argaddr(2, &addr2);
+  int ret = waitx(addr, &wtime, &rtime);
+  struct proc *p = myproc();
+  if (copyout(p->pagetable, addr1, (char *)&wtime, sizeof(int)) < 0)
+    return -1;
+  if (copyout(p->pagetable, addr2, (char *)&rtime, sizeof(int)) < 0)
+    return -1;
+  return ret;
+}
+
+uint64 sys_set_priority(void)
+{
+  int new_priority;
+  int process_pid;
+  int return_val = 0;
+
+  argint(0, &new_priority);
+  argint(1, &process_pid);
+
+  struct proc *p;
+  int change_flag = 0;
+  int found_flag = 0;
+
+  for (p = proc; p < &proc[NPROC]; p++)
+  {
+    acquire(&p->lock);
+
+    if (p->pid == process_pid)
+    {
+      found_flag = 1;
+      if (p->static_priority > new_priority)
+      {
+        change_flag = 1;
+      }
+      return_val = p->static_priority;
+      p->static_priority = new_priority;
+      p->niceness = 5;
+      p->sleeping_ticks = 0;
+      p->sleep_time = 0;
+      p->wait_time = 0;
+      p->running_ticks = 0;
+    }
+
+    release(&p->lock);
+  }
+
+  if (found_flag == 0)
+  {
+    return -1;
+  }
+
+  if (change_flag == 1)
+  {
+    yield();
+  }
+
+  return return_val;
+}
+
+uint64 sys_settickets(void)
+{
+  int n;
+  argint(0, &n);
+  myproc()->tickets = n;
+  return 0;
+}
+
 uint64 sys_trace(void)
 {
   if (myproc()->trace_flag == 0)
   {
     myproc()->trace_flag = 1;
     argint(0, &myproc()->trace_mask);
-    printf("entered here\n");
+    // printf("entered here\n");
   }
   return 0;
 }

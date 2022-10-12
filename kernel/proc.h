@@ -123,4 +123,23 @@ struct proc
   struct trapframe *trapframe_2;
   int trace_flag;
   int trace_mask;
+  int creation_time;
+  int tickets;
+
+  int static_priority;
+  int niceness;
+  int sleep_time;
+  int wakeup_time;
+  int sleeping_ticks;
+  int running_ticks;
+  int number_of_times_scheduled;
+
+  int queue;
+  int ticks_completed;
+  int wait_time;
+  int queue_index;
+
+  uint rtime;
+  uint ctime;
+  uint etime;
 };

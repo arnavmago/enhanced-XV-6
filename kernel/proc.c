@@ -5,6 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "rand.c"
 
 struct cpu cpus[NCPU];
 
@@ -132,6 +133,25 @@ found:
   p->alarm_flag = 0;
   p->trace_flag = 0;
   p->trace_mask = 0;
+  p->creation_time = ticks;
+  p->tickets = 1;
+
+  p->static_priority = 60;
+  p->niceness = 5;
+  p->sleep_time = 0;
+  p->wakeup_time = 0;
+  p->sleeping_ticks = 0;
+  p->running_ticks = 0;
+  p->number_of_times_scheduled = 0;
+
+  p->queue = 0;
+  p->ticks_completed = 0;
+  p->wait_time = 0;
+  p->queue_index = ticks;
+
+  p->rtime = 0;
+  p->etime = 0;
+  p->ctime = ticks;
 
   if ((p->trapframe_2 = (struct trapframe *)kalloc()) == 0)
   {
@@ -186,6 +206,32 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+  p->alarm_flag = 0;
+  p->alarm_interval = 0;
+  p->ticks_passed = 0;
+  p->handler = 0;
+  if (p->trapframe_2)
+    kfree((void *)p->trapframe_2);
+  p->trapframe_2 = 0;
+  p->trace_flag = 0;
+  p->trace_mask = 0;
+  p->creation_time = 0;
+  p->tickets = 0;
+
+  p->static_priority = 0;
+  p->niceness = 0;
+  p->sleeping_ticks = 0;
+  p->running_ticks = 0;
+  p->number_of_times_scheduled = 0;
+
+  p->queue = 0;
+  p->ticks_completed = 0;
+  p->wait_time = 0;
+  p->queue_index = 0;
+
+  p->ctime = 0;
+  p->rtime = 0;
+  p->etime = 0;
 }
 
 // Create a user page table for a given process, with no user memory,
@@ -344,6 +390,7 @@ int fork(void)
 
   np->trace_flag = p->trace_flag;
   np->trace_mask = p->trace_mask;
+  np->tickets = p->tickets;
 
   return pid;
 }
@@ -402,12 +449,83 @@ void exit(int status)
 
   p->xstate = status;
   p->state = ZOMBIE;
+  p->etime = ticks;
 
   release(&wait_lock);
 
   // Jump into the scheduler, never to return.
   sched();
   panic("zombie exit");
+}
+
+// Wait for a child process to exit and return its pid.
+// Return -1 if this process has no children.
+int waitx(uint64 addr, uint *wtime, uint *rtime)
+{
+  struct proc *np;
+  int havekids, pid;
+  struct proc *p = myproc();
+
+  acquire(&wait_lock);
+
+  for (;;)
+  {
+    // Scan through table looking for exited children.
+    havekids = 0;
+    for (np = proc; np < &proc[NPROC]; np++)
+    {
+      if (np->parent == p)
+      {
+        // make sure the child isn't still in exit() or swtch().
+        acquire(&np->lock);
+
+        havekids = 1;
+        if (np->state == ZOMBIE)
+        {
+          // Found one.
+          pid = np->pid;
+          *rtime = np->rtime;
+          *wtime = np->etime - np->ctime - np->rtime;
+          if (addr != 0 && copyout(p->pagetable, addr, (char *)&np->xstate,
+                                   sizeof(np->xstate)) < 0)
+          {
+            release(&np->lock);
+            release(&wait_lock);
+            return -1;
+          }
+          freeproc(np);
+          release(&np->lock);
+          release(&wait_lock);
+          return pid;
+        }
+        release(&np->lock);
+      }
+    }
+
+    // No point waiting if we don't have any children.
+    if (!havekids || p->killed)
+    {
+      release(&wait_lock);
+      return -1;
+    }
+
+    // Wait for a child to exit.
+    sleep(p, &wait_lock); // DOC: wait-sleep
+  }
+}
+
+void update_time()
+{
+  struct proc *p;
+  for (p = proc; p < &proc[NPROC]; p++)
+  {
+    acquire(&p->lock);
+    if (p->state == RUNNING)
+    {
+      p->rtime++;
+    }
+    release(&p->lock);
+  }
 }
 
 // Wait for a child process to exit and return its pid.
@@ -471,6 +589,7 @@ int wait(uint64 addr)
 //  - swtch to start running that process.
 //  - eventually that process transfers control
 //    via swtch back to the scheduler.
+
 void scheduler(void)
 {
   struct proc *p;
@@ -481,6 +600,241 @@ void scheduler(void)
   {
     // Avoid deadlock by ensuring that devices can interrupt.
     intr_on();
+
+#ifdef MLFQ
+    for (p = proc; p < &proc[NPROC]; p++)
+    {
+      acquire(&p->lock);
+      if (p->state == RUNNABLE)
+      {
+        if (p->wait_time > 1000)
+        {
+          if (p->queue != 0)
+          {
+            p->queue--;
+            p->ticks_completed = 0;
+            p->queue_index = ticks;
+            p->wait_time = 0;
+          }
+        }
+      }
+      release(&p->lock);
+    }
+
+    int queue_num = 10;
+
+    for (p = proc; p < &proc[NPROC]; p++)
+    {
+      acquire(&p->lock);
+      if (p->state == RUNNABLE)
+      {
+        if (p->queue < queue_num)
+        {
+          queue_num = p->queue;
+        }
+      }
+      release(&p->lock);
+    }
+
+    struct proc *selected_process = 0;
+    int flag2 = 0;
+    if (queue_num != 10)
+    {
+      for (p = proc; p < &proc[NPROC]; p++)
+      {
+        acquire(&p->lock);
+        if (p->state == RUNNABLE)
+        {
+          if (p->queue == queue_num)
+          {
+            if (selected_process == 0)
+            {
+              flag2 = 1;
+              selected_process = p;
+            }
+            else
+            {
+              if (p->queue_index < selected_process->queue_index)
+              {
+                selected_process = p;
+              }
+            }
+          }
+        }
+        release(&p->lock);
+      }
+    }
+
+    if (flag2 == 1)
+    {
+      acquire(&selected_process->lock);
+      if (selected_process->state == RUNNABLE)
+      {
+        // selected_process->last_run = ticks;
+        selected_process->wait_time = 0;
+        selected_process->state = RUNNING;
+        c->proc = selected_process;
+        swtch(&c->context, &selected_process->context);
+
+        c->proc = 0;
+      }
+      release(&selected_process->lock);
+    }
+
+#endif
+
+#ifdef PBS
+
+    struct proc *selected_proc = 0;
+    int dp;
+    int flag = 0;
+    for (p = proc; p < &proc[NPROC]; p++)
+    {
+      acquire(&p->lock);
+      if (p->state == RUNNABLE)
+      {
+        if (selected_proc == 0)
+        {
+          flag = 1;
+          selected_proc = p;
+          int min_result = ((p->static_priority - p->niceness + 5) < 100) ? p->static_priority - p->niceness + 5 : 100;
+          dp = (0 > min_result) ? 0 : min_result;
+        }
+        else
+        {
+          int min_result = ((p->static_priority - p->niceness + 5) < 100) ? p->static_priority - p->niceness + 5 : 100;
+          int proc_dp = (0 > min_result) ? 0 : min_result;
+
+          if (proc_dp < dp)
+          {
+            selected_proc = p;
+            dp = proc_dp;
+          }
+          else if (proc_dp == dp)
+          {
+            if (p->number_of_times_scheduled < selected_proc->number_of_times_scheduled)
+            {
+              selected_proc = p;
+              dp = proc_dp;
+            }
+            else if (p->number_of_times_scheduled == selected_proc->number_of_times_scheduled)
+            {
+              if (p->creation_time < selected_proc->creation_time)
+              {
+                selected_proc = p;
+                dp = proc_dp;
+              }
+            }
+          }
+        }
+      }
+      release(&p->lock);
+    }
+
+    if (flag == 1)
+    {
+      acquire(&selected_proc->lock);
+      if (selected_proc->state == RUNNABLE)
+      {
+        selected_proc->number_of_times_scheduled++;
+        selected_proc->state = RUNNING;
+        c->proc = selected_proc;
+        swtch(&c->context, &selected_proc->context);
+
+        c->proc = 0;
+      }
+      release(&selected_proc->lock);
+    }
+#endif
+
+#ifdef LBS
+    int total_tickets = 0;
+
+    for (p = proc; p < &proc[NPROC]; p++)
+    {
+      acquire(&p->lock);
+      if (p->state == RUNNABLE)
+      {
+        total_tickets += (p->tickets);
+      }
+      release(&p->lock);
+    }
+
+    uint random_num = rand(ticks);
+    random_num = random_num % total_tickets;
+
+    total_tickets = 0;
+    int flag = 0;
+
+    for (p = proc; p < &proc[NPROC]; p++)
+    {
+      acquire(&p->lock);
+      if (p->state == RUNNABLE)
+      {
+        total_tickets += (p->tickets);
+        if (total_tickets >= random_num)
+        {
+          flag = 1;
+          p->state = RUNNING;
+          c->proc = p;
+          swtch(&c->context, &p->context);
+
+          c->proc = 0;
+        }
+      }
+      release(&p->lock);
+      if (flag == 1)
+      {
+        break;
+      }
+    }
+
+#endif
+
+#ifdef FCFS
+    int flag = 0;
+    struct proc *first_created = 0;
+
+    for (p = proc; p < &proc[NPROC]; p++)
+    {
+      acquire(&p->lock);
+
+      if (p->state == RUNNABLE)
+      {
+        if (first_created == 0)
+        {
+          first_created = p;
+          flag = 1;
+        }
+        else
+        {
+          if (first_created->creation_time > p->creation_time)
+          {
+            first_created = p;
+          }
+        }
+      }
+
+      release(&p->lock);
+    }
+
+    if (flag == 1)
+    {
+      acquire(&first_created->lock);
+      if (first_created->state == RUNNABLE)
+      {
+        first_created->state = RUNNING;
+        c->proc = first_created;
+        swtch(&c->context, &first_created->context);
+
+        c->proc = 0;
+      }
+      release(&first_created->lock);
+    }
+
+#endif
+
+#ifdef RR
 
     for (p = proc; p < &proc[NPROC]; p++)
     {
@@ -500,6 +854,8 @@ void scheduler(void)
       }
       release(&p->lock);
     }
+
+#endif
   }
 }
 
@@ -579,6 +935,7 @@ void sleep(void *chan, struct spinlock *lk)
   // Go to sleep.
   p->chan = chan;
   p->state = SLEEPING;
+  p->sleep_time = ticks;
 
   sched();
 
@@ -604,6 +961,17 @@ void wakeup(void *chan)
       if (p->state == SLEEPING && p->chan == chan)
       {
         p->state = RUNNABLE;
+#ifdef PBS
+        p->wakeup_time = ticks;
+        p->sleeping_ticks = p->wakeup_time - p->sleep_time;
+        if ((p->sleeping_ticks != 0) && (p->running_ticks != 0))
+        {
+          p->niceness = (int)((p->sleeping_ticks / (p->sleeping_ticks + p->running_ticks)) * 10);
+        }
+#endif
+#ifdef MLFQ
+        p->queue_index = ticks;
+#endif
       }
       release(&p->lock);
     }

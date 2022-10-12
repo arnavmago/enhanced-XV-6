@@ -2,42 +2,44 @@
 #include "user/user.h"
 #include "kernel/fcntl.h"
 
-#define MAXARGS 10
-
 int main(int argc, char *argv[])
 {
-    // settickets(20);
     if (argc <= 2)
     {
-        fprintf(2, "strace: insufficient arguments\n");
+        printf("strace: wrong arguments\n");
         exit(1);
     }
 
-    char *mask_str = argv[1];
-    for (int i = 0; i < strlen(mask_str); i++)
+    char *mask = argv[1];
+
+    for (int i = 0; i < strlen(mask); i++)
     {
-        if (!('0' <= mask_str[i] && mask_str[i] <= '9'))
+        if (mask[i] >= '0' && mask[i] <= '9')
         {
-            fprintf(2, "strace: invalid syscall mask\n");
+            // alright;
+        }
+        else
+        {
+            printf("strace: Invalid integer mask argument\n");
             exit(1);
         }
     }
 
-    int mask = atoi(mask_str);
+    int integer_mask = atoi(mask);
 
     int pid = fork();
     if (pid == -1)
     {
-        fprintf(2, "strace: failed to run command\n");
+        printf("strace: Error forking a child to run command\n");
         exit(1);
     }
 
     if (pid == 0)
     {
-        trace(mask);
+        trace(integer_mask);
 
         exec(argv[2], argv + 2);
-        fprintf(2, "strace: exec %s failed\n", argv[2]);
+        printf("strace: exec %s failed\n", argv[2]);
         exit(1);
     }
     wait(0);
