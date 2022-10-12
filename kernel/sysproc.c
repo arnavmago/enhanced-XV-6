@@ -5,7 +5,6 @@
 #include "memlayout.h"
 #include "spinlock.h"
 #include "proc.h"
-#include "stdlib.h"
 
 uint64 sys_trace(void)
 {
@@ -13,7 +12,6 @@ uint64 sys_trace(void)
   {
     myproc()->trace_flag = 1;
     argint(0, &myproc()->trace_mask);
-    printf("entered here\n");
   }
   return 0;
 }
