@@ -5,7 +5,6 @@
 #include "memlayout.h"
 #include "spinlock.h"
 #include "proc.h"
-#include "stdlib.h"
 
 extern struct proc proc[NPROC];
 
@@ -89,7 +88,10 @@ uint64 sys_trace(void)
   {
     myproc()->trace_flag = 1;
     argint(0, &myproc()->trace_mask);
+<<<<<<< HEAD
     // printf("entered here\n");
+=======
+>>>>>>> 3da2a9d986b2279e3c39328df534d8395f367909
   }
   return 0;
 }
